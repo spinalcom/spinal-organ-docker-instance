@@ -5,23 +5,53 @@ let fs = spinalcore.connect('http://168:JHGgcz45JKilmzknzelf65ddDadggftIO98P@' +
 
 const imageDir = 'SpinalSystems';
 
-// TODO: iterate here through all the files
-// load all files and run doProcess
-// check.. is this enough??
 const imageName = 'demo_finewine:v0.0.1';
 
-spinalCore.load(fs, imageDir, function(images) {
+// this counter is for storing the number of images first run
+let firstSetOfImages = 0;
+// this flag is true when the first number of images had been procesed
+let firstRun = false;
+
+function loadModel() {
+
+  spinalCore.load(fs, imageDir, function(images) {
+    images.bind(function () {
+      processAllFiles(images);
+    });
+
+  }, function () {
+
+    setTimeout(loadModel, 5000);
+
+  });
+}
+
+loadModel();
+
+
+function processAllFiles(images) {
 
   for (var i=0; i < images.length; i++) {
     var im = images[i];
 
-    im.load(function (container) {
-      doProcess(container);
+    im.load(function (dockerImage) {
+      console.log(firstRun);
+      console.log(dockerImage.processed.get());
+      if (!firstRun || dockerImage.processed.get() == false) {
+        dockerImage.processed.set(true);
+        firstSetOfImages++;
+        doProcess(dockerImage);
+      }
+      if (firstSetOfImages == images.length) {
+        firstRun = true;
+      }
     });
+
     
   }
 
-});
+}
+
 /*
 spinalcore.load(fs, imageDir + imageName,
   function (dockerInstance) {
@@ -92,12 +122,33 @@ function doProcess(dockerInstance) {
     }
   });
 
+  dockerInstance.toCheck.bind(function () {
+
+    let toCheck = dockerInstance.toCheck;
+
+    for (let i=0; i < toCheck.length; i++) {
+      checkContainer(toCheck[i], dockerInstance.containers);
+      dockerInstance.checkedContainer(toCheck[i]);
+    }
+
+  });
+
   dockerInstance.containers.bind(function () {
 
     let containers = dockerInstance.containers;
   
     for (let i=0; i < containers.length; i++) {
       let c = containers[i];
+
+      // check for volume restore
+      if (c.restoreVolume.has_been_modified()) {
+        let restoreVolume = c.restoreVolume.get();
+        c.restoreVolume.set('');
+
+        doRestore(c, c.volume.get(), restoreVolume);
+      }
+
+      // check for status
       if (c.status.has_been_modified()) {
         switch (c.status.get()) {
           case 0:
@@ -116,10 +167,9 @@ function doProcess(dockerInstance) {
       }
     }
   });
+
 }
 
-// TODO: fill with other spinalhub params
-// TODO: stop spinal-core-hub/docker container before doing this and relaunch it after
 const { exec } = require('child_process');
 const path = require('path');
 
@@ -140,15 +190,17 @@ function doBackup(volume, container, src, target) {
 }
 
 function doRestore(container, src, backup) {
-  console.log('Replacing volvume of ' + container + ' for ' + backup + ' on ' + new Date());
+  let c = container.name.get();
+  console.log('Replacing volvume of ' + c + ' for ' + backup + ' on ' + new Date());
 
-  let cmd = 'docker stop ' + container + '; docker run --rm --name volumerize -v ' + src + ':/source -v ' + backup + ':/backup:ro -e "VOLUMERIZE_SOURCE=/source" -e "VOLUMERIZE_TARGET=file:///backup" blacklabelops/volumerize restore; docker start ' + container;
+  let cmd = 'docker stop ' + c + '; docker run --rm --name volumerize -v ' + src + ':/source -v ' + backup + ':/backup:ro -e "VOLUMERIZE_SOURCE=/source" -e "VOLUMERIZE_TARGET=file:///backup" blacklabelops/volumerize restore; docker start ' + c;
 
   exec(cmd, (err, stdout, stderr) => {
     if (err) {
       console.error(`exec error: ${err}`);
       return;
     }
+    container.lastVolume.set(backup);
     console.log(stdout);
   });
 }
@@ -174,7 +226,7 @@ function remove(volumes, i, volumeName) {
 // TODO: add button to check the status of the system (not now, in the future)
 // Test everything, do doc and upload
 
-function newContainer(container, imageName, port, volumeName, restoreVolume = false) {
+function newContainer(container, imageName, port, volumeName, restoreVolume = '') {
   console.log('Sarting container of ' + imageName + ' at ' + port + ' on ' + new Date());
 
   let srcVol = 'source=' + volumeName + ',';
@@ -184,11 +236,11 @@ function newContainer(container, imageName, port, volumeName, restoreVolume = fa
   console.log(cmd);
 
   
-  if (restoreVolume)
+  if (restoreVolume != '')
     setTimeout(function () {
       if (container.status.get() != 4) {
         container.status.set(1);
-        doRestore(container.name.get(), volumeName, restoreVolume)
+        doRestore(container, volumeName, restoreVolume)
       }
     }, 5000);
 
@@ -252,6 +304,22 @@ function stopContainer(i, containers) {
       return;
     }
     c.status.set(2);
+  });
+
+}
+
+function checkContainer(i, containers) {
+  let c = containers[i];
+  console.log('Checking container ' + c.name.get() + ' on ' + new Date());
+
+  let cmd = 'docker container ps | grep ' + c.name.get();
+
+  exec(cmd, (err, stdout, stderr) => {
+
+    if (stdout.length > 0)
+      c.status.set(1);
+    else
+      c.status.set(2);
   });
 
 }
